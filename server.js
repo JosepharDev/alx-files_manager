@@ -1,27 +1,18 @@
-require('dotenv').config();
-const controllingRoutes = require('./routes/index.js');
-const express = require('express');
-const helmet = require('helmet');
+import express from 'express';
+import router from './routes/index';
+
 const app = express();
-const port = process.env.PORT || 5000;
-
-app.use(helmet());
+const PortListen = process.env.PORT || 5000;
 app.use(express.json());
+app.use('/', router);
 
-controllingRoutes(app);
-
-app.listen(port, (err) => {
-  if (err) {
-    console.error('Failed to start the server:', err);
-  } else {
-    console.log(`Server is running on port ${port}`);
-  }
+const server = app.listen(PortListen, () => {
+  console.log('Server running on port', PortListen);
 });
 
-// Error logging middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).send('Something went wrong!');
+process.on('SIGINT', () => {
+  console.log('shutting down server...');
+  server.close(() => {
+    process.exit(0);
+  });
 });
-
-module.exports = app;

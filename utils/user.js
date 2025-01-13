@@ -1,38 +1,40 @@
-const redisClient = require('./redis');
-const dbClient = require('./db');
+import redisClient from './redis';
+import dbClient from './db';
 
 /**
- * Module dedicated to user utils.
+ * Module with user utilities
  */
-class UserUtils {
+const userUtils = {
   /**
-   * Method to query the database and find the user.
-   * @param {Object} query - Query object.
-   * @returns {Promise<Object>} - User object.
+   * Gets a user id and key of redis from request
+   * @request {request_object} express request obj
+   * @return {object} object containing userId and
+   * redis key for token
    */
-  static async getUser(query) {
-    const user = await dbClient.usersCollection.findOne(query);
-    return user;
-  }
-
-  /**
-   * Method to retrieve user ID and key from the request.
-   * @param {Object} request - The HTTP request object.
-   * @returns {Promise<Object>} - Object containing userId and key.
-   */
-  static async getUserIdAndKey(request) {
+  async getUserIdAndKey(request) {
     const obj = { userId: null, key: null };
 
     const xToken = request.header('X-Token');
 
-    // Check if token exists
     if (!xToken) return obj;
 
     obj.key = `auth_${xToken}`;
+
     obj.userId = await redisClient.get(obj.key);
 
     return obj;
-  }
-}
+  },
 
-module.exports = UserUtils;
+  /**
+   * Gets a user from database
+   * @query {object} query expression for finding
+   * user
+   * @return {object} user document object
+   */
+  async getUser(query) {
+    const user = await dbClient.usersCollection.findOne(query);
+    return user;
+  },
+};
+
+export default userUtils;

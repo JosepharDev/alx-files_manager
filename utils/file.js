@@ -1,39 +1,44 @@
-const { ObjectId } = require('mongodb');
-const { v4: uuid4 } = require('uuid');
-const { promises: fsPromises } = require('fs');
-const dbClient = require('./db');
-const basicUtils = require('./basic');
+import { ObjectId } from 'mongodb';
+import { v4 as uuidv4 } from 'uuid';
+import { promises as fsPromises } from 'fs';
+import dbClient from './db';
+import userUtils from './user';
+import basicUtils from './basic';
 
+/**
+ * Module with file utilities
+ */
 const fileUtils = {
   /**
-   * Validates if body is Valid for creating file
-   * @param {object} request - Express request object
-   * @return {object} - Object with error and validate params
+   * Validates if body is valid for creating file
+   * @request {request_object} express request obj
+   * @return {object} object with err and validated params
    */
   async validateBody(request) {
     const {
       name, type, isPublic = false, data,
     } = request.body;
 
-    // Extract parentId from the request.body
-    const { parentId = 0 } = request.body;
+    let { parentId = 0 } = request.body;
 
-    const typeAllowed = ['file', 'image', 'folder'];
+    const typesAllowed = ['file', 'image', 'folder'];
     let msg = null;
+
+    if (parentId === '0') parentId = 0;
 
     if (!name) {
       msg = 'Missing name';
-    } else if (!type || !typeAllowed.includes(type)) {
+    } else if (!type || !typesAllowed.includes(type)) {
       msg = 'Missing type';
     } else if (!data && type !== 'folder') {
-      msg = 'Missing type';
+      msg = 'Missing data';
     } else if (parentId && parentId !== '0') {
       let file;
 
-      if (basicUtils.isValid(parentId)) {
-        file = await dbClient.filesCollection.findOne(
-          { _id: ObjectId(parentId) },
-        );
+      if (basicUtils.isValidId(parentId)) {
+        file = await this.getFile({
+          _id: ObjectId(parentId),
+        });
       } else {
         file = null;
       }
@@ -60,11 +65,32 @@ const fileUtils = {
   },
 
   /**
-   * Saves files to database and disk
-   * param {string} userId - ID of the user
-   * param {object} fileParams - Object with attributes of file
-   * param {string} FOLDER_PATH - Path to save file
-   * return {Object} - Object with error if present
+   * gets file document from db
+   * @query {obj} query used to find file
+   * @return {object} file
+   */
+  async getFile(query) {
+    const file = await dbClient.filesCollection.findOne(query);
+    return file;
+  },
+
+  /**
+   * gets list of file documents from db belonging
+   * to a parent id
+   * @query {obj} query used to find file
+   * @return {Array} list of files
+   */
+  async getFilesOfParentId(query) {
+    const fileList = await dbClient.filesCollection.aggregate(query);
+    return fileList;
+  },
+
+  /**
+   * saves files to database and disk
+   * @userId {string} query used to find file
+   * @fileParams {obj} object with attributes of file to save
+   * @FOLDER_PATH {string} path to save file in disk
+   * @return {obj} object with error if present and file
    */
   async saveFile(userId, fileParams, FOLDER_PATH) {
     const {
@@ -83,12 +109,14 @@ const fileUtils = {
     };
 
     if (fileParams.type !== 'folder') {
-      const fileNameUUID = uuid4();
+      const fileNameUUID = uuidv4();
 
+      // const fileDataDecoded = Buffer.from(data, 'base64').toString('utf-8');
       const fileDataDecoded = Buffer.from(data, 'base64');
 
       const path = `${FOLDER_PATH}/${fileNameUUID}`;
-      query.localPath;
+
+      query.localPath = path;
 
       try {
         await fsPromises.mkdir(FOLDER_PATH, { recursive: true });
@@ -98,33 +126,23 @@ const fileUtils = {
       }
     }
 
-    const result = await dbClient.fileCollection.insertOne(query);
+    const result = await dbClient.filesCollection.insertOne(query);
+
+    // query.userId = query.userId.toString();
+    // query.parentId = query.parentId.toString();
+
     const file = this.processFile(query);
+
     const newFile = { id: result.insertedId, ...file };
 
     return { error: null, newFile };
   },
 
   /**
-   * Process the files and remove path
-   * transform _id into id in file document
-   * param {object} docs - Document to be processed
-   * return {Object} - document processed
-   */
-  processFile(doc) {
-    const file = { id: doc._id, ...doc };
-
-    delete file.localPath;
-    delete file._id;
-
-    return file;
-  },
-
-  /**
-   * Update a file document in database
-   * @query {obj} query to find document
-   * @set {obj} object with query information to update in mongo
-   * return {Object} - updated file
+   * Updates a file document in database
+   * @query {obj} query to find document to update
+   * @set {obj} object with query info to update in Mongo
+   * @return {object} updated file
    */
   async updateFile(query, set) {
     const fileList = await dbClient.filesCollection.findOneAndUpdate(
@@ -136,12 +154,101 @@ const fileUtils = {
   },
 
   /**
-   * Method to get files data
-   * @file file document
-   * @size size to append
-   * return data
+   * Makes a file public or private
+   * @request {request_object} express request obj
+   * @setPublish {boolean} true or false
+   * @return {object} error, status code and updated file
    */
-  async fileData(file, size) {
+  async publishUnpublish(request, setPublish) {
+    const { id: fileId } = request.params;
+
+    if (!basicUtils.isValidId(fileId)) { return { error: 'Unauthorized', code: 401 }; }
+
+    const { userId } = await userUtils.getUserIdAndKey(request);
+
+    if (!basicUtils.isValidId(userId)) { return { error: 'Unauthorized', code: 401 }; }
+
+    const user = await userUtils.getUser({
+      _id: ObjectId(userId),
+    });
+
+    if (!user) return { error: 'Unauthorized', code: 401 };
+
+    const file = await this.getFile({
+      _id: ObjectId(fileId),
+      userId: ObjectId(userId),
+    });
+
+    if (!file) return { error: 'Not found', code: 404 };
+
+    const result = await this.updateFile(
+      {
+        _id: ObjectId(fileId),
+        userId: ObjectId(userId),
+      },
+      { $set: { isPublic: setPublish } },
+    );
+
+    const {
+      _id: id,
+      userId: resultUserId,
+      name,
+      type,
+      isPublic,
+      parentId,
+    } = result.value;
+
+    const updatedFile = {
+      id,
+      userId: resultUserId,
+      name,
+      type,
+      isPublic,
+      parentId,
+    };
+
+    return { error: null, code: 200, updatedFile };
+  },
+
+  /**
+   * Transform _id into id in a file document
+   * @doc {object} document to be processed
+   * @return {object} processed document
+   */
+  processFile(doc) {
+    // Changes _id for id and removes localPath
+
+    const file = { id: doc._id, ...doc };
+
+    delete file.localPath;
+    delete file._id;
+
+    return file;
+  },
+
+  /**
+   * Checks if a file is public and belongs to a
+   * specific user
+   * @file {object} file to evaluate
+   * @userId {string} id of user to check ownership
+   * @return {boolean} true or false
+   */
+  isOwnerAndPublic(file, userId) {
+    if (
+      (!file.isPublic && !userId)
+      || (userId && file.userId.toString() !== userId && !file.isPublic)
+    ) { return false; }
+
+    return true;
+  },
+
+  /**
+   * Gets a files data from database
+   * @file {object} file to obtain data of
+   * @size {string} size in case of file being image
+   * @return {object} data of file or error and status code
+   */
+  async getFileData(file, size) {
     let { localPath } = file;
     let data;
 
@@ -149,7 +256,8 @@ const fileUtils = {
 
     try {
       data = await fsPromises.readFile(localPath);
-    } catch (error) {
+    } catch (err) {
+      // console.log(err.message);
       return { error: 'Not found', code: 404 };
     }
 
@@ -157,4 +265,4 @@ const fileUtils = {
   },
 };
 
-module.exports = fileUtils;
+export default fileUtils;
